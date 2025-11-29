@@ -1,0 +1,68 @@
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+
+# --- Editors/IDEs ---
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+
+# --- Logs & caches ---
+logs/
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.cache/
+.tmp/
+.tmp-tests/
+.jest-cache/
+jest-stare/
+
+# --- Node ---
+node_modules/
+# Keep lockfiles for reproducibility
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# --- TypeScript ---
+dist/
+build/
+out/
+lib/
+*.tsbuildinfo
+
+# --- Tests ---
+coverage/
+
+# --- Env & secrets ---
+.env
+.env.*
+!.env.example
+
+# --- TON/Blueprint artifacts ---
+# If your tests import compiled JSON directly, you may want to commit it.
+# Otherwise ignore build outputs.
+build/
+*.boc
+*.cell
+*.addr
+*.fif
+*.fcmap
+
+# TON Connect / wallets / local state
+tonconnect*.json
+wallet*.json
+
+# --- Generated data (indexer snapshots, etc.) ---
+snapshots/
+owners.json
+
+# --- Misc binaries ---
+*.swp
+*.swo

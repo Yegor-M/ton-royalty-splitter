@@ -1,0 +1,4 @@
+;; Unique op-codes for RoyaltyCollector
+int op_rc::batch_distribute() asm "0x7a11c0de PUSHINT";
+int op_rc::set_creator()      asm "0x7a11c001 PUSHINT";
+int op_rc::set_params()       asm "0x7a11c002 PUSHINT"; ;; keepAlive/minPayout

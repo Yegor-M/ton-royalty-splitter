@@ -1,0 +1,181 @@
+#include "imports/stdlib.fc";
+
+int op::batch()        asm "0x7a11c0de PUSHINT";
+int op::set_creator()  asm "0x7a11c001 PUSHINT";
+int op::set_params()   asm "0x7a11c002 PUSHINT";
+int op::get_state()    asm "0x10001 PUSHINT";
+
+(slice, slice, int, int, int, int, int, int, int) load_data() inline {
+  slice ds = get_data().begin_parse();
+  return (
+    ds~load_msg_addr(),
+    ds~load_msg_addr(),
+    ds~load_coins(),
+    ds~load_coins(),
+    ds~load_uint(32),
+    ds~load_uint(32),
+    ds~load_uint(1),
+    ds~load_coins(),
+    ds~load_coins()
+  );
+}
+
+() save_data(
+  slice owner,
+  slice creator,
+  int keepAlive,
+  int minPayout,
+  int lastEpoch,
+  int curEpoch,
+  int epochStarted,
+  int epochPerItemShare,
+  int epochRemaining
+) impure inline {
+  set_data(
+    begin_cell()
+      .store_slice(owner)
+      .store_slice(creator)
+      .store_coins(keepAlive)
+      .store_coins(minPayout)
+      .store_uint(lastEpoch, 32)
+      .store_uint(curEpoch, 32)
+      .store_uint(epochStarted, 1)
+      .store_coins(epochPerItemShare)
+      .store_coins(epochRemaining)
+    .end_cell()
+  );
+}
+
+() onlyOwner(slice sender) inline {
+  var (ow, _, _, _, _, _, _, _, _) = load_data();
+  throw_unless(401, equal_slices(sender, ow));
+}
+
+() nonReentrantEnter() impure inline { }
+() nonReentrantExit()  impure inline { }
+
+() send_coins(slice to, int amount) impure inline {
+  var msg = begin_cell()
+    .store_uint(0x10, 6)
+    .store_slice(to)
+    .store_coins(amount)
+    .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1);
+  send_raw_message(msg.end_cell(), 1);
+}
+
+(int, slice) owners_begin(cell c) inline {
+  slice s = c.begin_parse();
+  int len = s~load_uint(16);
+  return (len, s);
+}
+
+slice owners_nth(slice s0, int idx) inline {
+  slice s = s0;
+  int i = 0;
+  while (1) {
+    slice a = s~load_msg_addr();
+    if (i == idx) {
+      return a;
+    }
+    i += 1;
+  }
+  return null();
+}
+
+() handle_batch(slice body) impure inline {
+  var (owner, creator, keepAlive, minPayout, lastEpoch, curEpoch, epochStarted, perShare, remaining) = load_data();
+
+  int epoch = body~load_uint(32);
+  int start = body~load_uint(16);
+  int endi  = body~load_uint(16);
+  cell ownersC = body~load_ref();
+
+  var (total, os) = owners_begin(ownersC);
+  throw_unless(410, start <= endi);
+  throw_unless(411, endi <= total);
+
+  if (~ epochStarted | (curEpoch != epoch)) {
+    [int, cell] be = get_balance();
+    int balance = pair_first(be);
+    throw_unless(405, balance > keepAlive);
+    int pool = balance - keepAlive;
+
+    int halfCreator = pool / 2;
+    int halfHolders = pool - halfCreator;
+
+    if (halfCreator >= minPayout) {
+      send_coins(creator, halfCreator);
+    }
+
+    int share = (total > 0) ? (halfHolders / total) : 0;
+    int rem   = (total > 0) ? (halfHolders - share * total) : 0;
+
+    curEpoch = epoch;
+    epochStarted = 1;
+    perShare = share;
+    remaining = share * total + rem;
+
+    save_data(owner, creator, keepAlive, minPayout, lastEpoch, curEpoch, epochStarted, perShare, remaining);
+  } else {
+    throw_unless(406, curEpoch == epoch);
+  }
+
+  var (_, _, _, _, _, _, _, perShare2, remaining2) = load_data();
+  int ps = perShare2;
+  int rem2 = remaining2;
+
+  if (ps >= minPayout) {
+    int i = start;
+    while (i < endi) {
+      slice addr = owners_nth(os, i);
+      send_coins(addr, ps);
+      rem2 -= ps;
+      i += 1;
+    }
+  }
+
+  if (endi == total) {
+    lastEpoch = epoch;
+    curEpoch = 0;
+    epochStarted = 0;
+    ps = 0;
+    rem2 = 0;
+  }
+
+  save_data(owner, creator, keepAlive, minPayout, lastEpoch, curEpoch, epochStarted, ps, rem2);
+}
+
+() recv_internal() impure {
+  slice b = get_msg_body();
+  if (slice_bits(b) == 0) {
+    return ();
+  }
+  int op = 0;
+  if (slice_bits(b) >= 32) {
+    op = b~load_uint(32);
+  } else {
+    return ();
+  }
+  if (op == 0) {
+    return ();
+  }
+  if (op == op::batch()) {
+    ;; ... твоя логика batch ...
+    return ();
+  }
+  if (op == op::set_creator()) {
+    ;; ... твоя логика set_creator ...
+    return ();
+  }
+  if (op == op::set_params()) {
+    ;; ... твоя логика set_params ...
+    return ();
+  }
+  return ();
+}
+
+
+(int, slice, int, int, int, int, int, int) get_state() method_id {
+  var (_, creator, keepAlive, minPayout, lastEpoch, curEpoch, epochStarted, perShare, remaining) = load_data();
+  return (lastEpoch, creator, keepAlive, minPayout, curEpoch, epochStarted, perShare, remaining);
+}
