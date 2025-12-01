@@ -4,6 +4,7 @@
 
 int op_rc::set_epoch() asm "0x7a11c100 PUSHINT";
 int op_rc::claim()     asm "0x7a11c101 PUSHINT";
+const int CREATOR_BPS = 5000; ;; 50%
 
 
 ;; ---------------- STORAGE ----------------
@@ -112,6 +113,10 @@ int verify_merkle(int root_hash, int idx, slice addr, cell proof) inline {
   return (h == root_hash);
 }
 
+int share_creator(int pool) inline {
+  return muldiv(pool, CREATOR_BPS, 10000);
+}
+
 ;; ---------------- HANDLERS ----------------
 
 () on_set_epoch(slice body, slice sender) impure inline {
@@ -132,7 +137,7 @@ int verify_merkle(int root_hash, int idx, slice addr, cell proof) inline {
     return ();
   }
 
-  int halfCreator = pool / 2;
+  int halfCreator = share_creator(pool);
   int halfHolders = pool - halfCreator;
 
   if (halfCreator >= minPayout) {
