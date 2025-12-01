@@ -1,0 +1,241 @@
+#include "imports/stdlib.fc";
+
+;; ---------------- OPCODES ----------------
+
+int op_rc::set_epoch() asm "0x7a11c100 PUSHINT";
+int op_rc::claim()     asm "0x7a11c101 PUSHINT";
+
+
+;; ---------------- STORAGE ----------------
+;; c4 layout:
+;; owner      : MsgAddress
+;; creator    : MsgAddress
+;; keepAlive  : coins
+;; minPayout  : coins
+;; epochId    : uint32
+;; perShare   : coins       ;; сколько TON на одного holder'а в текущей эпохе
+;; claimed    : dict(uint32 -> 1 bit)
+;; root_hash  : uint256 int ;; merkle root (int, т.е. 256 бит)
+
+(slice, slice, int, int, int, int, cell, int) load_state() inline {
+  slice ds = get_data().begin_parse();
+
+  slice owner     = ds~load_msg_addr();
+  slice creator   = ds~load_msg_addr();
+  int   keepAlive = ds~load_coins();
+  int   minPayout = ds~load_coins();
+  int   epochId   = ds~load_uint(32);
+  int   perShare  = ds~load_coins();
+
+  ;; claimed: dict(uint32 -> 1-бит), лежит прямо в ds
+  cell claimed = preload_dict(ds);   ;; только читаем корень
+  ds = skip_dict(ds);                ;; сдвигаем slice мимо словаря
+
+  ;; дальше – root_hash (uint256)
+  int root_hash = ds~load_uint(256);
+
+  return (owner, creator, keepAlive, minPayout, epochId, perShare, claimed, root_hash);
+}
+
+
+() save_state(
+  slice owner,
+  slice creator,
+  int keepAlive,
+  int minPayout,
+  int epochId,
+  int perShare,
+  cell claimed,
+  int root_hash
+) impure inline {
+  set_data(
+    begin_cell()
+      .store_slice(owner)
+      .store_slice(creator)
+      .store_coins(keepAlive)
+      .store_coins(minPayout)
+      .store_uint(epochId, 32)
+      .store_coins(perShare)
+      .store_dict(claimed)
+      .store_uint(root_hash, 256)
+    .end_cell()
+  );
+}
+
+;; ---------------- HELPERS ----------------
+
+() send_coins(slice to, int amount) impure inline {
+  var b = begin_cell()
+    .store_uint(0x10, 6) ;; int_msg_info, ihr_disabled=1, bounce=0, bounced=0
+    .store_slice(to)
+    .store_coins(amount)
+    .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1); ;; пустое тело
+  send_raw_message(b.end_cell(), 1);
+}
+
+;; proof: ^cell, внутри одной ячейки подряд записаны uint256 sibling-хэши
+int leaf_hash(int idx, slice addr) inline {
+  cell leaf = begin_cell()
+    .store_uint(idx, 32)
+    .store_slice(addr)
+  .end_cell();
+  return cell_hash(leaf);
+}
+
+int hash_pair(int h1, int h2) inline {
+  int lo = (h1 < h2) ? h1 : h2;
+  int hi = (h1 < h2) ? h2 : h1;
+  cell c = begin_cell()
+    .store_uint(lo, 256)
+    .store_uint(hi, 256)
+  .end_cell();
+  return cell_hash(c);
+}
+
+int verify_merkle(int root_hash, int idx, slice addr, cell proof) inline {
+  int h = leaf_hash(idx, addr);
+  cell cur = proof;
+
+  ;; proof – цепочка ячеек, каждая: [sib:uint256][?ref next]
+  while (~ cell_null?(cur)) {
+    slice ps = cur.begin_parse();
+    int sib = ps~load_uint(256);
+    h = hash_pair(h, sib);
+
+    if (ps.slice_refs() > 0) {
+      cur = ps~load_ref();
+    } else {
+      cur = null();
+    }
+  }
+
+  return (h == root_hash);
+}
+
+;; ---------------- HANDLERS ----------------
+
+() on_set_epoch(slice body, slice sender) impure inline {
+  var (owner, creator, keepAlive, minPayout, epochId, perShare, claimed, root_hash) = load_state();
+
+  ;; только owner может звать set_epoch
+  throw_unless(401, equal_slices(sender, owner));
+
+  int newEpochId = body~load_uint(32);
+  int total      = body~load_uint(16);
+  int newRoot    = body~load_uint(256);
+
+  int balance = pair_first(get_balance());
+  int pool = balance - keepAlive;
+  if (pool <= 0) {
+    ;; просто обновим эпоху/рут, ничего не раздаём
+    save_state(owner, creator, keepAlive, minPayout, newEpochId, 0, new_dict(), newRoot);
+    return ();
+  }
+
+  int halfCreator = pool / 2;
+  int halfHolders = pool - halfCreator;
+
+  if (halfCreator >= minPayout) {
+    send_coins(creator, halfCreator);
+  }
+
+  int share = (total > 0) ? (halfHolders / total) : 0;
+  if (share < minPayout) {
+    share = 0;
+  }
+
+  cell emptyClaimed = new_dict();
+  save_state(owner, creator, keepAlive, minPayout, newEpochId, share, emptyClaimed, newRoot);
+}
+
+() on_claim(slice body, slice sender) impure inline {
+  var (owner, creator, keepAlive, minPayout, epochId, perShare, claimed, root_hash) = load_state();
+
+  int idx       = body~load_uint(32);
+  cell proofCell = body~load_ref();
+
+  ;; уже клеймили?
+  (slice oldv, int found) = udict_get?(claimed, 32, idx);
+  throw_if(432, found != 0);
+
+  ;; проверяем меркл-пруф (теперь реально)
+  throw_unless(421, verify_merkle(root_hash, idx, sender, proofCell));
+
+  int amount = perShare;
+  if (amount < minPayout) {
+    builder b0 = begin_cell().store_uint(1, 1);
+    claimed = udict_set_builder(claimed, 32, idx, b0);
+    save_state(owner, creator, keepAlive, minPayout, epochId, perShare, claimed, root_hash);
+    return ();
+  }
+
+  int bal = pair_first(get_balance());
+  throw_unless(405, bal >= keepAlive + amount);
+
+  send_coins(sender, amount);
+
+  builder b = begin_cell().store_uint(1, 1);
+  claimed = udict_set_builder(claimed, 32, idx, b);
+  save_state(owner, creator, keepAlive, minPayout, epochId, perShare, claimed, root_hash);
+}
+
+;; ---------------- ENTRYPOINT ----------------
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  slice cs = in_msg_full.begin_parse();
+  int flags = cs~load_uint(4);
+  if (flags & 1) {
+    return ();
+  }
+
+  slice sender = cs~load_msg_addr();
+  cs~load_msg_addr();   ;; dest
+  cs~load_coins();      ;; value
+  cs~skip_bits(1);      ;; extra currencies
+  cs~load_coins();      ;; ihr_fee
+  cs~load_coins();      ;; fwd_fee
+  cs~skip_bits(64 + 32);
+
+  ;; пустое тело — просто пополнение (роялти)
+  if (slice_bits(in_msg_body) < 32) {
+    return ();
+  }
+
+  int op = in_msg_body~load_uint(32);
+
+  if (op == op_rc::set_epoch()) {
+    on_set_epoch(in_msg_body, sender);
+    return ();
+  }
+
+  if (op == op_rc::claim()) {
+    on_claim(in_msg_body, sender);
+    return ();
+  }
+
+  ;; неизвестный op — игнорируем
+  return ();
+}
+
+int count_claimed(cell d) inline {
+  int cnt = 0;
+  int i = -1;
+  do {
+    (i, var v, int f) = udict_get_next?(d, 32, i);
+    if (f) {
+      cnt += 1;
+    }
+  } until (~ f);
+  return cnt;
+}
+
+int debug_verify(int idx, slice addr, cell proof) method_id {
+  var (_, _, _, _, _, _, _, int root_hash) = load_state();
+  return verify_merkle(root_hash, idx, addr, proof);
+}
+
+(int, int, int, int, int, int, int) get_state() method_id {
+  var (_, _, keepAlive, minPayout, epochId, perShare, claimed, root_hash) = load_state();
+  int claimedCount = count_claimed(claimed);
+  return (epochId, keepAlive, minPayout, perShare, claimedCount, root_hash, 0);
+}
