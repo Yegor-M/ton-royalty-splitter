@@ -259,7 +259,7 @@ describe('RoyaltySplitterMerkle (base)', () => {
         expect(diff < toNano('1')).toBe(true);    
   });
 
-  it('handles many epochs (100) and sparse claims for 100 holders', async () => {
+  it.skip('handles many epochs (100) and sparse claims for 100 holders', async () => {
     const blockchain = await Blockchain.create();
     const owner    = await blockchain.treasury('owner');
     const creator  = await blockchain.treasury('creator');
@@ -351,150 +351,130 @@ describe('RoyaltySplitterMerkle (base)', () => {
     expect(deltaCreator < totalFund).toBe(true);       // но не больше, чем всё
   });
 
-  it.skip('splits pool between creator and holders claim via merkle', async () => {
+  it('multi-epoch royalties with separate treasury and full economic summary', async () => {
     const blockchain = await Blockchain.create();
-    const owner   = await blockchain.treasury('owner');
-    const creator = await blockchain.treasury('creator');
-    const other = await blockchain.treasury('creator');
   
-    const treasury_amount = 100;
-    const share_ratio = 1 / 2;
+    const owner    = await blockchain.treasury('owner');
+    const creator  = await blockchain.treasury('creator');
+    const treasury = await blockchain.treasury('treasury'); // кошелёк, который заливает TON в пул
+  
+    const N_HOLDERS  = 100;
+    const N_EPOCHS   = 100;
+    const EPOCH_FUND = toNano('100'); // 100 TON в каждую эпоху
   
     const holders: SandboxContract<TreasuryContract>[] = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < N_HOLDERS; i++) {
       holders.push(await blockchain.treasury('h' + i));
     }
   
     const code = Cell.fromBoc(Buffer.from(codeHex, 'hex'))[0];
-  
     const config = {
       owner: owner.address,
       creator: creator.address,
-      keepAlive: toNano('0.1'),
-      minPayout: toNano('0.01'),
+      keepAlive: toNano('1'),
+      minPayout: toNano('0.1'),
     };
   
     const splitter = blockchain.openContract(
       RoyaltySplitterMerkle.createFromConfig(config, code),
     );
   
-    // --------- СНИМАЕМ "СТАРТ" ПО БАЛАНСАМ ---------
-    const ownerStart   = (await blockchain.getContract(owner.address)).balance;
-    const creatorStart = (await blockchain.getContract(creator.address)).balance;
+    // ---- стартовые балансы всех участников ----
+    const ownerStart    = (await blockchain.getContract(owner.address)).balance;
+    const creatorStart  = (await blockchain.getContract(creator.address)).balance;
+    const treasuryStart = (await blockchain.getContract(treasury.address)).balance;
     const splitterStart = (await blockchain.getContract(splitter.address)).balance;
-    const holdersStart = await Promise.all(
+    const holdersStart  = await Promise.all(
       holders.map(async h => (await blockchain.getContract(h.address)).balance),
     );
   
-    await splitter.sendDeploy(owner.getSender(), toNano('0.3'));
+    await splitter.sendDeploy(owner.getSender(), toNano('2'));
   
-    console.log('Deployed splitter with address', splitter.address);
-  
-    await owner.send({
-      to: splitter.address,
-      value: toNano(treasury_amount.toString()),
-    });
-  
-    const splitterBefore = (await blockchain.getContract(splitter.address)).balance;
-    const creatorBefore  = (await blockchain.getContract(creator.address)).balance;
-  
-    console.log('Splitter BEFORE setEpoch:');
-    const state = await splitter.getState();
-  
-    console.log('State BEFORE setEpoch:', {
-      epochId: state.epochId,
-      keepAlive: state.keepAlive.toString(),
-      minPayout: state.minPayout.toString(),
-      perShare: state.perShare.toString(),
-      rootHash: state.rootHash.toString(16),
-      claimedCount: state.claimedCount,
-      balance: fromNano(splitterBefore),
-    });
-    console.log('Creator balance BEFORE setEpoch :', fromNano(creatorBefore));
-  
-    const holdersPool = toNano((treasury_amount * share_ratio).toString());
-    const each = holdersPool / BigInt(holders.length);
-  
+    // общий Merkle для всех holders (одинаковый для всех эпох)
     const leaves = holders.map((h, i) => ({ index: i, owner: h.address }));
     const { rootHash, proofs } = buildMerkle(leaves);
   
-    await splitter.sendSetEpoch(owner.getSender(), {
-      epochId: 1,
-      total: holders.length,
-      rootHash,
-    });
+    const creatorBeforeEpochs = (await blockchain.getContract(creator.address)).balance;
   
-    const creatorAfter  = (await blockchain.getContract(creator.address)).balance;
-    const splitterAfter = (await blockchain.getContract(splitter.address)).balance;
-  
-    console.log('Creator balance AFTER setEpoch :', fromNano(creatorAfter));
-  
-    const deltaCreatorSetEpoch = creatorAfter - creatorBefore;
-    console.log('Δcreator (after setEpoch only) =', fromNano(deltaCreatorSetEpoch));
-  
-    const stateAfter = await splitter.getState();
-  
-    console.log('State AFTER setEpoch:', {
-      epochId: stateAfter.epochId,
-      keepAlive: stateAfter.keepAlive.toString(),
-      minPayout: stateAfter.minPayout.toString(),
-      perShare: stateAfter.perShare.toString(),
-      rootHash: stateAfter.rootHash.toString(16),
-      claimedCount: stateAfter.claimedCount,
-      balance: fromNano(splitterAfter),
-    });
-  
-    // Проверяем, что epochId обновился и perShare > "теоретического" each
-    expect(stateAfter.epochId).toBe(1);
-    expect(
-      stateAfter.perShare > toNano(((treasury_amount * share_ratio) / holders.length).toString()),
-    ).toBe(true);
-  
-    // Creator должен получить хотя бы ~50% пула (с поправкой на газ)
-    expect(
-      deltaCreatorSetEpoch > toNano((treasury_amount * share_ratio - 0.5).toString()),
-    ).toBe(true);
-  
-    // --- Claims ---
-  
-    const beforeH = await Promise.all(
-      holders.map(async h => (await blockchain.getContract(h.address)).balance),
-    );
-  
-    for (let i = 0; i < holders.length; i++) {
-      const proofCell = proofToCell(proofs[i]);
-  
-      const provider = blockchain.provider(splitter.address);
-      const debugRes = await RoyaltySplitterMerkle.debugVerifyRaw(provider, {
-        index: i,
-        owner: holders[i].address,
-        proof: proofCell,
+    for (let epoch = 1; epoch <= N_EPOCHS; epoch++) {
+      // 1) Treasury заливает фонд эпохи
+      await treasury.send({
+        to: splitter.address,
+        value: EPOCH_FUND,
       });
-      console.log('debug_verify result:', debugRes);
   
-      await splitter.sendClaim(holders[i].getSender(), {
-        index: i,
-        proof: proofCell,
+      const balanceBeforeSet = (await blockchain.getContract(splitter.address)).balance;
+  
+      // 2) Owner выставляет эпоху
+      await splitter.sendSetEpoch(owner.getSender(), {
+        epochId: epoch,
+        total: N_HOLDERS,
+        rootHash,
       });
+  
+      const balanceAfterSet = (await blockchain.getContract(splitter.address)).balance;
+      const state = await splitter.getState();
+  
+      // epochId должен обновиться
+      expect(state.epochId).toBe(epoch);
+      // perShare > 0 (хотя бы что-то достаётся holder'ам)
+      expect(state.perShare > 0n).toBe(true);
+  
+      // Разница баланса контракта ≈ фонд эпохи минус отданное creator'у и газ
+      // (строгих чисел не ждём, просто sanity check)
+      expect(balanceAfterSet <= balanceBeforeSet).toBe(true);
+  
+      // 3) В этой эпохе даём клеймить 10 различным держателям
+      const claimedThisEpoch = new Set<number>();
+  
+      for (let k = 0; k < 100; k++) {
+        const idx = (epoch * 100 + k) % N_HOLDERS;
+        if (claimedThisEpoch.has(idx)) continue;
+        claimedThisEpoch.add(idx);
+  
+        const proofCell = proofToCell(proofs[idx]);
+        const holder    = holders[idx];
+  
+        const before = (await blockchain.getContract(holder.address)).balance;
+  
+        await splitter.sendClaim(holder.getSender(), {
+          index: idx,
+          proof: proofCell,
+        });
+  
+        const after = (await blockchain.getContract(holder.address)).balance;
+        const delta = after - before;
+  
+        // клейм в этой эпохе должен что-то принести
+        expect(delta > 0n).toBe(true);
+  
+        // повторный клейм не должен приносить значимого прироста
+        const beforeSecond = (await blockchain.getContract(holder.address)).balance;
+        await splitter.sendClaim(holder.getSender(), {
+          index: idx,
+          proof: proofCell,
+        });
+        const afterSecond = (await blockchain.getContract(holder.address)).balance;
+  
+        // либо 0, либо максимум "пыль" меньше minPayout
+        expect(afterSecond - beforeSecond <= config.minPayout).toBe(true);
+      }
     }
   
-    const afterH = await Promise.all(
-      holders.map(async h => (await blockchain.getContract(h.address)).balance),
-    );
+    const creatorEnd = (await blockchain.getContract(creator.address)).balance;
+    const deltaCreator = creatorEnd - creatorBeforeEpochs;
   
-    for (let i = 0; i < holders.length; i++) {
-      const delta = afterH[i] - beforeH[i];
-      console.log(`holder[${i}] Δ=`, fromNano(delta));
-      expect(delta > 0n).toBe(true);
-    }
+    // общий фонд, который вносил treasury
+    const totalFund = EPOCH_FUND * BigInt(N_EPOCHS);
   
-    const finalState = await splitter.getState();
-    expect(finalState.claimedCount).toBe(holders.length);
+    // creator в сумме должен забрать значимую долю фонда (≈ 50% - газ)
+    expect(deltaCreator > totalFund / 3n).toBe(true);  // хотя бы ~ треть
+    expect(deltaCreator < totalFund).toBe(true);       // но не больше самого фонда
   
-    // --- ФИНАЛЬНАЯ ЭКОНОМИКА ТЕСТА ---
+    // ---- ФИНАЛЬНАЯ ЭКОНОМИКА ----
   
     const ownerEnd    = (await blockchain.getContract(owner.address)).balance;
-    const creatorEnd  = (await blockchain.getContract(creator.address)).balance;
+    const treasuryEnd = (await blockchain.getContract(treasury.address)).balance;
     const splitterEnd = (await blockchain.getContract(splitter.address)).balance;
     const holdersEnd  = await Promise.all(
       holders.map(async h => (await blockchain.getContract(h.address)).balance),
@@ -508,54 +488,49 @@ describe('RoyaltySplitterMerkle (base)', () => {
     const totalStart =
       ownerStart +
       creatorStart +
+      treasuryStart +
       splitterStart +
       holdersStartSum;
   
     const totalEnd =
       ownerEnd +
       creatorEnd +
+      treasuryEnd +
       splitterEnd +
       holdersEndSum;
   
-    const gasBurned = totalStart - totalEnd; // что «исчезло» — ушло в комиссии валидаторам
+    const gasBurned = totalStart - totalEnd; // всё, что «исчезло» — ушло валидаторам
   
-    const creatorGain = creatorEnd - creatorStart;
-    const holdersGain = holdersEndSum - holdersStartSum;
-    const splitterGain = splitterEnd - splitterStart; // финальный остаток контракта
+    const creatorGain   = creatorEnd  - creatorStart;
+    const holdersGain   = holdersEndSum   - holdersStartSum;
+    const splitterGain  = splitterEnd - splitterStart;
+    const treasurySpend = treasuryStart - treasuryEnd; // сколько реально влил treasury
   
-    const totalInflowFromUsers =
-      (ownerStart - ownerEnd) +           // сколько потерял owner
-      (holdersStartSum - holdersEndSum);  // сколько потеряли холдеры на газ/вход
-  
-    // на всякий пожарный – неотрицательность
+    // sanity: газ не отрицательный
     expect(gasBurned >= 0n).toBe(true);
   
-    const toTon = (x: bigint) => Number(fromNano(x));
+    const toTon  = (x: bigint) => Number(fromNano(x));
     const round2 = (x: number) => Math.round(x * 100) / 100;
+    const pct    = (part: number, total: number) =>
+      total > 0 ? round2((part / total) * 100) : 0;
   
-    const inflowT   = toTon(totalInflowFromUsers);
+    const inflowT   = toTon(treasurySpend);      // считаем, что только treasury – донор пула
     const creatorT  = toTon(creatorGain);
     const holdersT  = toTon(holdersGain);
     const splitterT = toTon(splitterGain);
     const gasT      = toTon(gasBurned);
   
-    const pct = (part: number, total: number) =>
-      total > 0 ? round2((part / total) * 100) : 0;
-  
-    console.log('--- ECONOMIC SUMMARY ---');
-    console.log('Total inflow from users (owner + holders):', round2(inflowT), 'TON');
-    console.log('Creator received:    ', round2(creatorT),  'TON',
+    console.log('--- ECONOMIC SUMMARY (multi-epoch) ---');
+    console.log('Total treasury spend:  ', round2(inflowT),   'TON');
+    console.log('Creator received:      ', round2(creatorT),  'TON',
                 `(${pct(creatorT, inflowT)}%)`);
-    console.log('Holders received:    ', round2(holdersT),  'TON',
+    console.log('Holders received:      ', round2(holdersT),  'TON',
                 `(${pct(holdersT, inflowT)}%)`);
-    console.log('Contract started with:    ', splitterStart,  'NANO',
-    `(${pct(toTon(splitterStart), inflowT)}%)`);
-    console.log('Contract leftover:   ', round2(splitterT), 'TON',
+    console.log('Splitter leftover:     ', round2(splitterT), 'TON',
                 `(${pct(splitterT, inflowT)}%)`);
-    console.log('Gas burned (fees):   ', round2(gasT),      'TON',
+    console.log('Gas burned (fees):     ', round2(gasT),      'TON',
                 `(${pct(gasT, inflowT)}%)`);
   
-    // доп. контроль: сумма долей ≈ 100%
     const sumPct =
       pct(creatorT, inflowT) +
       pct(holdersT, inflowT) +
@@ -564,9 +539,8 @@ describe('RoyaltySplitterMerkle (base)', () => {
   
     console.log('Sum of percentages ≈', sumPct, '%');
   
-    // можно разрешить небольшую погрешность из-за округления
+    // допускаем ±1% из-за округлений
     expect(sumPct).toBeGreaterThanOrEqual(99);
     expect(sumPct).toBeLessThanOrEqual(101);
-
-  });
+  });  
 });

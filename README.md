@@ -1,34 +1,144 @@
-# Royalty Splitter Merkle
+Royalty Splitter Merkle (TON)
 
-On-chain royalty splitter for TON with a **push** + **pull** payout model:
+A minimal, gas-efficient pull-based royalty distribution contract for the TON blockchain.
+Funds are streamed into the contract (e.g., marketplace fees, protocol revenue), and then split between:
 
-- **Push**: creator (или коллекция) периодически заливает роялти на контракт и вызывает `set_epoch`. Контракт:
-  - забирает текущий `pool = balance - keepAlive`;
-  - делит его по фиксированному сплиту (по умолчанию 50/50) между **создателем** и **холдерами**;
-  - запоминает `perShare` и Merkle root для текущей эпохи;
-  - обнуляет словарь `claimed` для новой эпохи.
+Creator — receives a fixed percentage (e.g., 50%) on epoch finalization.
 
-- **Pull**: каждый холдер сам забирает свою долю через `claim`:
-  - off-chain код строит Merkle–дерево по списку `(index, owner)` и знает proof для каждого холдера;
-  - on-chain контракт проверяет proof и переводит фиксированный `perShare` этому адресу;
-  - повторный `claim` для того же `index` запрещён.
+Holders — claim their share using Merkle proofs for each epoch.
 
-Контракт написан на **FunC**, поверх стандартной TON stdlib.
+This design ensures scalable distribution to hundreds or thousands of holders without iterating on-chain.
 
----
+✦ Key Features
 
-## Design
+Pull-based distribution
+Holders claim their rewards individually using Merkle proofs. No loops, no gas spikes.
 
-### Storage layout
+Epoch-based payouts
+Each epoch defines:
 
-```text
-data = cell {
-  owner:      MsgAddress    ;; кто может вызывать set_epoch
-  creator:    MsgAddress    ;; кому уходит creator-часть пула
-  keepAlive:  Coins         ;; минимальный остаток на контракте
-  minPayout:  Coins         ;; минимальная выплата холдеру
-  epochId:    uint32        ;; номер текущей эпохи
-  perShare:   Coins         ;; сколько получает один "лист" в дереве
-  claimed:    dict(uint32 -> bit) ;; кто уже клеймил в этой эпохе
-  rootHash:   uint256       ;; Merkle root для текущей эпохи
-}
+epochId
+
+merkleRoot
+
+perShare (calculated on-chain)
+
+a clean claimed dictionary
+
+Configurable economics
+Percentage for creator payouts is set via CREATOR_BPS (default: 5000 = 50%).
+
+Merkle-verified claiming
+Only addresses belonging to the epoch’s Merkle tree can claim.
+
+Gas-efficient & safe
+
+Storage minimized
+
+No external dependencies
+
+Protection against double-claim and invalid proofs
+
+✦ How It Works
+1. Funding
+
+Anyone (typically a treasury wallet or platform) can send TON to the contract.
+These funds accumulate until the owner initiates a new epoch.
+
+2. Finalizing an Epoch
+
+Only the owner can call:
+
+set_epoch(epochId, totalHolders, merkleRoot)
+
+
+The contract:
+
+Calculates the pool = balance – keepAlive
+
+Splits pool using CREATOR_BPS
+
+Sends creator’s share immediately
+
+Computes perShare for holders
+
+Resets claimed dictionary
+
+3. Claiming by Holders
+
+Holders call claim(index, proofCell).
+
+Merkle proof is validated on-chain
+
+Holder receives perShare
+
+Claim is permanently recorded in a compact dictionary
+
+✦ Security Model
+
+All proof verification is deterministic and stateless.
+
+Double-claiming is prevented via a persistent bit dictionary.
+
+Contract keeps a keepAlive reserve to remain deployable long-term.
+
+All mutation happens only inside epoch boundaries.
+
+✦ Repository Structure
+contracts/
+  royalty-splitter-merkle.fc   # FunC smart contract
+
+wrappers/
+  RoyaltySplitterMerkle.ts     # TypeScript contract wrapper
+
+tests/
+  royaltySplitterMerkle.spec.ts # End-to-end multi-epoch test suite
+
+utils/
+  merkle.ts                    # Merkle tree builder (off-chain)
+
+✦ Development
+
+Install dependencies:
+
+npm install
+
+
+Run all tests:
+
+npm test
+
+
+Rebuild contract:
+
+npx blueprint build
+
+✦ Testing Approach
+
+The test suite includes:
+
+Single-epoch distribution
+
+Multi-epoch (100 epochs × 100 holders) simulation
+
+Merkle proof verification
+
+Gas accounting and economic summary
+
+Double-claim protection
+
+It models realistic marketplace revenue flows using an external treasury wallet.
+
+✦ License
+
+MIT — use freely in commercial and open-source projects.
+
+If you want, I can also write:
+
+a more marketing-oriented README,
+
+a technical whitepaper-style README,
+
+or a developer onboarding section with architecture diagrams.
+
+Just tell me the style you prefer.

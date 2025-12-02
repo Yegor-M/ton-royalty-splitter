@@ -37,6 +37,7 @@
     "buffer": "^6.0.3",
     "mime-types": "^3.0.1",
     "minimist": "^1.2.8",
+    "node-fetch": "^3.3.2",
     "pinata": "^2.4.8",
     "sharp": "^0.34.2",
     "ton-contract-executor": "^0.8.4",
