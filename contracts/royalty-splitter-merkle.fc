@@ -97,7 +97,7 @@ int verify_merkle(int root_hash, int idx, slice addr, cell proof) inline {
   ;; базовый leaf = hash(index, address)
   int h = leaf_hash(idx, addr);
 
-  ;; special-case: пустой proof (0 siblings) – дерево из одного листа
+  ;; special case: пустой proof (0 siblings) – дерево из одного листа
   slice head = proof.begin_parse();
   if ((head.slice_bits() == 0) & (head.slice_refs() == 0)) {
     return (h == root_hash);
@@ -106,10 +106,10 @@ int verify_merkle(int root_hash, int idx, slice addr, cell proof) inline {
   ;; обычный случай: цепочка ячеек, каждая [sib:uint256][ref next?]
   cell cur = proof;
 
-  while (1) {
+  while (~ cell_null?(cur)) {
     slice ps = cur.begin_parse();
 
-    ;; защита от кривых proof’ов – если не хватает 256 бит, просто считаем proof невалидным
+    ;; защита от кривых proof’ов – если не хватает 256 бит, считаем proof невалидным
     if (ps.slice_bits() < 256) {
       return 0;
     }
@@ -117,11 +117,11 @@ int verify_merkle(int root_hash, int idx, slice addr, cell proof) inline {
     int sib = ps~load_uint(256);
     h = hash_pair(h, sib);
 
+    ;; если есть реф – идём дальше по цепочке, иначе выходим из цикла
     if (ps.slice_refs() > 0) {
       cur = ps~load_ref();
     } else {
-      ;; siblings закончились
-      break;
+      cur = null(); ;; => условие while (~ cell_null?(cur)) станет ложным
     }
   }
 

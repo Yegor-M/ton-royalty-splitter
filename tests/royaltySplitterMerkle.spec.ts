@@ -623,5 +623,129 @@ describe('RoyaltySplitterMerkle (base)', () => {
   
     // claim не должен засчитаться – счётчик клеймов не меняется
     expect(stateAfter.claimedCount).toBe(claimedBefore);
-  });  
+  });
+
+  it('handles single holder (empty merkle proof)', async () => {
+    const blockchain = await Blockchain.create();
+    const owner   = await blockchain.treasury('owner_single');
+    const creator = await blockchain.treasury('creator_single');
+    const holder  = await blockchain.treasury('holder_single');
+  
+    // ----- деплой контракта -----
+    const code = Cell.fromBoc(Buffer.from(codeHex, 'hex'))[0];
+  
+    const config = {
+      owner: owner.address,
+      creator: creator.address,
+      keepAlive: toNano('0.1'),
+      minPayout: toNano('0.01'),
+    };
+  
+    const splitter = blockchain.openContract(
+      RoyaltySplitterMerkle.createFromConfig(config, code),
+    );
+  
+    await splitter.sendDeploy(owner.getSender(), toNano('0.3'));
+  
+    // ----- пополняем пул -----
+    const TREASURY_AMOUNT = 10; // 10 TON
+    await owner.send({
+      to: splitter.address,
+      value: toNano(TREASURY_AMOUNT.toString()),
+    });
+  
+    const stateBefore = await splitter.getState();
+    console.log('single-holder: state BEFORE setEpoch', {
+      epochId: stateBefore.epochId,
+      keepAlive: stateBefore.keepAlive.toString(),
+      minPayout: stateBefore.minPayout.toString(),
+      perShare: stateBefore.perShare.toString(),
+      rootHash: stateBefore.rootHash.toString(16),
+      claimedCount: stateBefore.claimedCount,
+    });
+  
+    // ----- строим Merkle по одному холдеру -----
+    const leaves = [
+      { index: 0, owner: holder.address },
+    ];
+    const { rootHash, proofs } = buildMerkle(leaves);
+  
+    // proofs[0] должен быть [] (пустой proof),
+    // это как раз кейс, который проверяет verify_merkle с empty proof.
+    expect(Array.isArray(proofs[0])).toBe(true);
+    expect(proofs[0].length).toBe(0);
+  
+    // ----- вызываем set_epoch -----
+    await splitter.sendSetEpoch(owner.getSender(), {
+      epochId: 1,
+      total: 1,      // один holder
+      rootHash,
+    });
+  
+    const stateAfter = await splitter.getState();
+    console.log('single-holder: state AFTER setEpoch', {
+      epochId: stateAfter.epochId,
+      keepAlive: stateAfter.keepAlive.toString(),
+      minPayout: stateAfter.minPayout.toString(),
+      perShare: stateAfter.perShare.toString(),
+      rootHash: stateAfter.rootHash.toString(16),
+      claimedCount: stateAfter.claimedCount,
+    });
+  
+    // epochId обновился, perShare > 0
+    expect(stateAfter.epochId).toBe(1);
+    expect(stateAfter.perShare > 0n).toBe(true);
+  
+    // ----- debug_verify для пустого proof -----
+    const proofCell = proofToCell(proofs[0]); // proofs[0] === []
+  
+    const provider = blockchain.provider(splitter.address);
+    const dbg = await RoyaltySplitterMerkle.debugVerifyRaw(provider, {
+      index: 0,
+      owner: holder.address,
+      proof: proofCell,
+    });
+    console.log('single-holder: debug_verify =', dbg);
+    expect(dbg !== 0).toBe(true); // меркл-пруф валиден
+  
+    // ----- claim -----
+    const beforeHolder = (await blockchain.getContract(holder.address)).balance;
+  
+    await splitter.sendClaim(holder.getSender(), {
+      index: 0,
+      proof: proofCell,
+    });
+  
+    const afterHolder = (await blockchain.getContract(holder.address)).balance;
+    const delta = afterHolder - beforeHolder;
+    console.log('single-holder: holder Δ=', fromNano(delta));
+  
+    // Холдер точно получил payout (с учётом газа, но > 0)
+    expect(delta > 0n).toBe(true);
+  
+    // ----- второй claim: не должен принести ещё денег -----
+    const beforeSecond = (await blockchain.getContract(holder.address)).balance;
+    await splitter.sendClaim(holder.getSender(), {
+      index: 0,
+      proof: proofCell,
+    });
+    const afterSecond = (await blockchain.getContract(holder.address)).balance;
+    const deltaSecond = afterSecond - beforeSecond;
+    console.log('single-holder: holder second Δ=', fromNano(deltaSecond));
+  
+    // максимум пыль <= minPayout (обычно 0)
+    expect(deltaSecond <= config.minPayout).toBe(true);
+  
+    const finalState = await splitter.getState();
+    expect(finalState.claimedCount).toBe(1);
+    console.log('single-holder: state AFTER setclaim', {
+      epochId: finalState.epochId,
+      keepAlive: finalState.keepAlive.toString(),
+      minPayout: finalState.minPayout.toString(),
+      perShare: finalState.perShare.toString(),
+      rootHash: finalState.rootHash.toString(16),
+      claimedCount: finalState.claimedCount,
+    });
+  });
+  
 });
