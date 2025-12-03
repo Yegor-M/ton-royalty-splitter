@@ -1,0 +1,17 @@
+{
+  "epochId": 3,
+  "label": "item-owners-snapshot-2025-12-02T20-48-14",
+  "createdAt": "2025-12-03T12:47:06.164Z",
+  "collectionRaw": "0:678fa0fc52e3373432f756b8042e560edaad01c2e875aac0f958f28089f66980",
+  "collectionFriendly": "EQBnj6D8UuM3NDL3VrgELlYO2q0Bwuh1qsD5WPKAifZpgGtd",
+  "splitter": "EQDbyrYQK8JRM6eVPrrlK_Lg4U97IgL0IuigFqytk-HMzAa_",
+  "total": 1,
+  "holders": [
+    {
+      "index": 0,
+      "owner": "EQA8ciN_RVYDwnhb-r8vPLMtff42sVZS7cdD1LY0GkR7SsWs",
+      "nft": "0:dbee4ee119ef8bdc479aae19554862eae6468336d4be5c7ca4181e98d27f1bdf",
+      "proof": []
+    }
+  ]
+}

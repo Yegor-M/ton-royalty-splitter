@@ -23,5 +23,4 @@ export async function run(provider: NetworkProvider) {
   ui.write(`perShare     : ${fromNano(state.perShare)} TON`);
   ui.write(`claimedCount : ${state.claimedCount}`);
   ui.write(`rootHash     : 0x${state.rootHash.toString(16)}`);
-  ui.write('');
 }

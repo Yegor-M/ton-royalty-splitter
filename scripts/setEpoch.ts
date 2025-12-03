@@ -1,27 +1,78 @@
 // scripts/setEpoch.ts
 
 import { NetworkProvider } from '@ton/blueprint';
-import { Address, fromNano } from '@ton/core';
+import { Address, fromNano, Cell } from '@ton/core';
 import * as fs from 'fs';
 import * as path from 'path';
 import { RoyaltySplitterMerkle } from '../wrappers/RoyaltySplitterMerkle';
-import snapshot from '../snapshots/item-owners-snapshot-2025-12-02T20-48-14.json';
-import { buildMerkle } from './merkle'; 
+import { buildMerkle } from './merkle';
 
-type EpochSnapshot = {
-  epochId: number;
-  label?: string;
-  total: number;
-  rootHash: string; // "0x..." or decimal string
-  // holders / proofs можем игнорить для set_epoch
+type SnapshotHolder = {
+  index: number;
+  owner: string;          // raw 0:... или friendly — парсим через Address.parse
+  nft: string;
+  ownerFriendly?: string;
 };
 
-function parseRootHash(str: string): bigint {
-  const s = str.trim();
-  if (s.startsWith('0x') || s.startsWith('0X')) {
-    return BigInt(s);
+type SnapshotFile = {
+  label?: string;
+  createdAt: string;
+  collectionRaw: string;
+  collectionFriendly: string;
+  total: number;
+  holders: SnapshotHolder[];
+};
+
+type EpochClaimHolder = {
+  index: number;
+  owner: string;   // friendly
+  nft: string;
+  proof: string[]; // массив хексов "0x..."
+};
+
+type EpochClaimFile = {
+  epochId: number;
+  epoch_file?: string;
+  createdAt: string;
+  collectionRaw: string;
+  collectionFriendly: string;
+  splitter: string; // friendly-адрес сплиттера
+  total: number;
+  holders: EpochClaimHolder[];
+};
+function extractProofHex(proof: unknown): string[] {
+  // Вариант 1: массив bigints/чисел
+  if (Array.isArray(proof)) {
+    return (proof as any[]).map(p => '0x' + BigInt(p).toString(16));
   }
-  return BigInt(s);
+
+  // Вариант 2: цепочка Cell
+  if (proof instanceof Cell) {
+    const result: string[] = [];
+    let cur: Cell | null = proof;
+
+    while (cur) {
+      const s = cur.beginParse();
+
+      // Если в ячейке нет 256 бит — считаем, что proof закончился (или пустой)
+      if (s.remainingBits < 256) {
+        break;
+      }
+
+      const sib = s.loadUint(256);
+      result.push('0x' + sib.toString(16));
+
+      if (s.remainingRefs > 0) {
+        cur = s.loadRef();
+      } else {
+        cur = null;
+      }
+    }
+
+    return result;
+  }
+
+  throw new Error('Unsupported proof format in buildMerkle / extractProofHex');
 }
 
 export async function run(provider: NetworkProvider) {
@@ -29,11 +80,14 @@ export async function run(provider: NetworkProvider) {
 
   ui.write('=== RoyaltySplitterMerkle :: set_epoch ===');
 
-  // адрес контракта
-  const addrStr = "kQDbyrYQK8JRM6eVPrrlK_Lg4U97IgL0IuigFqytk-HMzL01";
-  const splitterAddress = Address.parse(addrStr.trim());
-  const splitter = provider.open(RoyaltySplitterMerkle.createFromAddress(splitterAddress));
+  // 1) Адрес сплиттера (friendly, как у тебя в mainnet/testnet)
+  const splitterFriendly = 'kQDbyrYQK8JRM6eVPrrlK_Lg4U97IgL0IuigFqytk-HMzL01';
+  const splitterAddress = Address.parse(splitterFriendly.trim());
+  const splitter = provider.open(
+    RoyaltySplitterMerkle.createFromAddress(splitterAddress),
+  );
 
+  // 2) Текущий стейт
   const state = await splitter.getState();
 
   ui.write('=== Current RoyaltySplitterMerkle state ===');
@@ -45,11 +99,9 @@ export async function run(provider: NetworkProvider) {
   ui.write(`rootHash     : 0x${state.rootHash.toString(16)}`);
   ui.write('');
 
-
-  // путь до снапшота
-  const snapshotPathInput = "./snapshots/item-owners-snapshot-2025-12-02T20-48-14.json";// = await ui.input(
-  //   'Path to epoch snapshot JSON (e.g. ./snapshots/epoch_1.json): ',
-  // );
+  // 3) Путь к снапшоту с холдерами (из snapshot_collect.ts)
+  const snapshotPathInput =
+    './snapshots/item-owners-snapshot-2025-12-02T20-48-14.json';
   const snapshotPath = path.resolve(snapshotPathInput.trim());
 
   if (!fs.existsSync(snapshotPath)) {
@@ -58,25 +110,86 @@ export async function run(provider: NetworkProvider) {
   }
 
   const raw = fs.readFileSync(snapshotPath, 'utf-8');
-  const snap: EpochSnapshot = JSON.parse(raw);
-  console.log(raw);
+  const snap: SnapshotFile = JSON.parse(raw);
 
-  const epochId = snap.epochId;
-  const total = snap.total;
-  const leaves = snapshot.holders.map((h: any) => ({
+  ui.write('=== Loaded snapshot ===');
+  ui.write(`label      : ${snap.label ?? '(no label)'}`);
+  ui.write(`createdAt  : ${snap.createdAt}`);
+  ui.write(`collection : ${snap.collectionFriendly} (${snap.collectionRaw})`);
+  ui.write(`total      : ${snap.total}`);
+  ui.write('');
+
+  if (snap.holders.length !== snap.total) {
+    ui.write(
+      `WARNING: holders.length (${snap.holders.length}) != total (${snap.total})`,
+    );
+  }
+
+  // 4) Строим Merkle по холдерам
+  const leaves = snap.holders.map(h => ({
     index: h.index,
     owner: Address.parse(h.ownerFriendly ?? h.owner),
   }));
-  
-  const { rootHash } = buildMerkle(leaves);
 
-  ui.write(`Loaded snapshot: ${snap.label ?? '(no label)'}`);
-  ui.write(`epochId = ${epochId}`);
-  ui.write(`total   = ${total}`);
-  ui.write(`rootHash = ${rootHash.toString(16)} (hex)`);
+  const { rootHash, proofs } = buildMerkle(leaves);
+
+  ui.write('=== Computed Merkle root ===');
+  ui.write(`rootHash (dec) : ${rootHash.toString()}`);
+  ui.write(`rootHash (hex) : 0x${rootHash.toString(16)}`);
+  ui.write('');
+
+  // 5) epochId — по умолчанию следующий
+  const suggestedEpoch = state.epochId + 1;
+  ui.write(
+    `Current epochId: ${state.epochId}, suggested next epochId: ${suggestedEpoch}`,
+  );
+
+  // Можно сделать интерактив, а можно просто взять suggestedEpoch:
+  // const epochStr = await ui.input(`Enter epochId [${suggestedEpoch}]: `);
+  // const epochId = epochStr.trim() === '' ? suggestedEpoch : Number(epochStr.trim());
+  const epochId = suggestedEpoch;
+  const total = snap.total;
+
+  ui.write('=== set_epoch params ===');
+  ui.write(`epochId  : ${epochId}`);
+  ui.write(`total    : ${total}`);
+  ui.write(`rootHash : 0x${rootHash.toString(16)}`);
+  ui.write('');
+
+  // 6) Готовим epoch_claim_<epochId>.json для TMA/бэка
+
+  const claimFile: EpochClaimFile = {
+    epochId,
+    epoch_file: snap.label,
+    createdAt: new Date().toISOString(),
+    collectionRaw: snap.collectionRaw,
+    collectionFriendly: snap.collectionFriendly,
+    splitter: splitter.address.toString(),
+    total,
+    holders: snap.holders.map((h, i) => ({
+      index: h.index,
+      owner: Address.parse(h.ownerFriendly ?? h.owner).toString(),
+      nft: h.nft,
+      proof: extractProofHex((proofs as any)[i]),   // ← вот тут магия
+    })),
+  };
+
+  const epochsDir = path.resolve('./epochs');
+  if (!fs.existsSync(epochsDir)) {
+    fs.mkdirSync(epochsDir);
+  }
+
+  const claimPath = path.join(epochsDir, `epoch_claim_${epochId}.json`);
+  fs.writeFileSync(claimPath, JSON.stringify(claimFile, null, 2), 'utf-8');
+
+  ui.write(`Saved epoch claim file: ${claimPath}`);
+  ui.write('');
+
+  // 7) Подтверждение на отправку set_epoch
 
   const ownerSender = provider.sender();
   ui.write(`Using sender (owner wallet): ${ownerSender.address!.toString()}`);
+  ui.write('');
 
   const confirm = await ui.input('Type "yes" to send set_epoch: ');
   if (confirm.trim().toLowerCase() !== 'yes') {
@@ -84,9 +197,6 @@ export async function run(provider: NetworkProvider) {
     return;
   }
 
-  // Аналогично, как и в deploy:
-  // если wrapper с auto-injected provider через provider.open(...),
-  // достаточно передать только sender и args.
   await splitter.sendSetEpoch(ownerSender, {
     epochId,
     total,
@@ -94,22 +204,5 @@ export async function run(provider: NetworkProvider) {
   });
 
   ui.write('set_epoch message sent.');
-
-  // можно глянуть состояние после
-  const state_ = await splitter.getState();
-  ui.write('State after set_epoch:');
-  ui.write(
-    JSON.stringify(
-      {
-        epochId: state_.epochId,
-        keepAlive: state_.keepAlive.toString(),
-        minPayout: state_.minPayout.toString(),
-        perShare: state_.perShare.toString(),
-        claimedCount: state_.claimedCount,
-        rootHash: state_.rootHash.toString(16),
-      },
-      null,
-      2,
-    ),
-  );
+  ui.write('');
 }

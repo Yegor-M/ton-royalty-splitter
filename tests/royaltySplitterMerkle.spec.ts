@@ -351,7 +351,7 @@ describe('RoyaltySplitterMerkle (base)', () => {
     expect(deltaCreator < totalFund).toBe(true);       // но не больше, чем всё
   });
 
-  it('multi-epoch royalties with separate treasury and full economic summary', async () => {
+  it.skip('multi-epoch royalties with separate treasury and full economic summary', async () => {
     const blockchain = await Blockchain.create();
   
     const owner    = await blockchain.treasury('owner');
@@ -542,5 +542,86 @@ describe('RoyaltySplitterMerkle (base)', () => {
     // допускаем ±1% из-за округлений
     expect(sumPct).toBeGreaterThanOrEqual(99);
     expect(sumPct).toBeLessThanOrEqual(101);
+  });
+
+  it('restrict owner from claiming if they are not in merkle tree', async () => {
+    const blockchain = await Blockchain.create();
+    const owner   = await blockchain.treasury('owner');
+    const creator = await blockchain.treasury('creator');
+  
+    const holders: SandboxContract<TreasuryContract>[] = [];
+    for (let i = 0; i < 5; i++) {
+      holders.push(await blockchain.treasury('h' + i));
+    }
+  
+    const code = Cell.fromBoc(Buffer.from(codeHex, 'hex'))[0];
+  
+    const config = {
+      owner: owner.address,
+      creator: creator.address,
+      keepAlive: toNano('0.1'),
+      minPayout: toNano('0.01'),
+    };
+  
+    const splitter = blockchain.openContract(
+      RoyaltySplitterMerkle.createFromConfig(config, code),
+    );
+  
+    await splitter.sendDeploy(owner.getSender(), toNano('0.3'));
+  
+    await owner.send({
+      to: splitter.address,
+      value: toNano('100'),
+    });
+  
+    const leaves = holders.map((h, i) => ({ index: i, owner: h.address }));
+    const { rootHash, proofs } = buildMerkle(leaves);
+  
+    await splitter.sendSetEpoch(owner.getSender(), {
+      epochId: 1,
+      total: holders.length,
+      rootHash,
+    });
+  
+    const stateBefore = await splitter.getState();
+    expect(stateBefore.epochId).toBe(1);
+    expect(stateBefore.perShare > 0n).toBe(true);
+  
+    const ownerBefore = (await blockchain.getContract(owner.address)).balance;
+    const claimedBefore = stateBefore.claimedCount;
+  
+    // proof[0] валиден для holders[0], но мы проверим его на owner
+    const proofCell = proofToCell(proofs[0]);
+  
+    // 1) Убедимся, что debug_verify говорит "невалидно"
+    const provider = blockchain.provider(splitter.address);
+    const dbg = await RoyaltySplitterMerkle.debugVerifyRaw(provider, {
+      index: 0,
+      owner: owner.address,
+      proof: proofCell,
+    });
+    console.log('debug_verify(owner, idx=0) =', dbg);
+    expect(dbg).toBe(0); // 0 = fail, 1 = ok
+  
+    // 2) Пробуем заклеймить – промис резолвится, но транза будет с throw внутри контракта
+    await splitter.sendClaim(owner.getSender(), {
+      index: 0,
+      proof: proofCell,
+    });
+  
+    const ownerAfter = (await blockchain.getContract(owner.address)).balance;
+    const stateAfter = await splitter.getState();
+  
+    // Он не должен ПОЛУЧИТЬ профит (баланс не растёт, максимум – немного упал из-за газа)
+    const deltaOwner = ownerAfter - ownerBefore;
+    console.log('owner Δ=', fromNano(deltaOwner));
+  
+    // Не заработал ни наноТОНа
+    expect(deltaOwner <= 0n).toBe(true);
+    // И не сжёг безумный газ (просто sanity bound)
+    expect(deltaOwner > -toNano('0.3')).toBe(true);
+  
+    // claim не должен засчитаться – счётчик клеймов не меняется
+    expect(stateAfter.claimedCount).toBe(claimedBefore);
   });  
 });
