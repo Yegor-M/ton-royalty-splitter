@@ -1,56 +1,53 @@
-Royalty Splitter Merkle (TON)
+# Royalty Splitter Merkle (TON)
 
-A minimal, gas-efficient pull-based royalty distribution contract for the TON blockchain.
+A minimal, gas-efficient **pull-based royalty distribution contract** for the TON blockchain.  
 Funds are streamed into the contract (e.g., marketplace fees, protocol revenue), and then split between:
 
-Creator — receives a fixed percentage (e.g., 50%) on epoch finalization.
+- **Creator** — receives a fixed percentage (e.g., 50%) on epoch finalization  
+- **Holders** — claim their share using **Merkle proofs** for each epoch
 
-Holders — claim their share using Merkle proofs for each epoch.
+This design ensures scalable distribution to hundreds or thousands of holders **without iterating on-chain**.
 
-This design ensures scalable distribution to hundreds or thousands of holders without iterating on-chain.
+---
 
-✦ Key Features
+## ✦ Key Features
 
-Pull-based distribution
-Holders claim their rewards individually using Merkle proofs. No loops, no gas spikes.
+### Pull-based distribution  
+Holders claim their rewards individually using Merkle proofs.  
+No loops, no gas spikes.
 
-Epoch-based payouts
+### Epoch-based payouts  
 Each epoch defines:
+- `epochId`
+- `merkleRoot`
+- `perShare` (calculated on-chain)
+- a clean claimed dictionary
 
-epochId
+### Configurable economics  
+Percentage for creator payouts is set via `CREATOR_BPS`  
+(default: `5000` = 50%).
 
-merkleRoot
-
-perShare (calculated on-chain)
-
-a clean claimed dictionary
-
-Configurable economics
-Percentage for creator payouts is set via CREATOR_BPS (default: 5000 = 50%).
-
-Merkle-verified claiming
+### Merkle-verified claiming  
 Only addresses belonging to the epoch’s Merkle tree can claim.
 
-Gas-efficient & safe
+### Gas-efficient & safe
+- Storage minimized  
+- No external dependencies  
+- Protection against double-claim and invalid proofs  
 
-Storage minimized
+---
 
-No external dependencies
+## ✦ How It Works
 
-Protection against double-claim and invalid proofs
-
-✦ How It Works
-1. Funding
-
-Anyone (typically a treasury wallet or platform) can send TON to the contract.
+### Funding
+Anyone (typically a treasury wallet or platform) can send TON to the contract.  
 These funds accumulate until the owner initiates a new epoch.
 
-2. Finalizing an Epoch
-
+### Finalizing an Epoch
 Only the owner can call:
 
+```text
 set_epoch(epochId, totalHolders, merkleRoot)
-
 
 The contract:
 
@@ -64,9 +61,12 @@ Computes perShare for holders
 
 Resets claimed dictionary
 
-3. Claiming by Holders
+Claiming by Holders
 
-Holders call claim(index, proofCell).
+Holders call:
+
+claim(index, proofCell)
+
 
 Merkle proof is validated on-chain
 
@@ -76,26 +76,26 @@ Claim is permanently recorded in a compact dictionary
 
 ✦ Security Model
 
-All proof verification is deterministic and stateless.
+All proof verification is deterministic and stateless
 
-Double-claiming is prevented via a persistent bit dictionary.
+Double-claiming is prevented via a persistent bit dictionary
 
-Contract keeps a keepAlive reserve to remain deployable long-term.
+Contract keeps a keepAlive reserve to remain deployable long-term
 
-All mutation happens only inside epoch boundaries.
+All mutation happens only inside epoch boundaries
 
 ✦ Repository Structure
 contracts/
-  royalty-splitter-merkle.fc   # FunC smart contract
+  royalty-splitter-merkle.fc      # FunC smart contract
 
 wrappers/
-  RoyaltySplitterMerkle.ts     # TypeScript contract wrapper
+  RoyaltySplitterMerkle.ts        # TypeScript contract wrapper
 
 tests/
-  royaltySplitterMerkle.spec.ts # End-to-end multi-epoch test suite
+  royaltySplitterMerkle.spec.ts   # End-to-end multi-epoch test suite
 
 utils/
-  merkle.ts                    # Merkle tree builder (off-chain)
+  merkle.ts                       # Merkle tree builder (off-chain)
 
 ✦ Development
 
@@ -132,13 +132,3 @@ It models realistic marketplace revenue flows using an external treasury wallet.
 ✦ License
 
 MIT — use freely in commercial and open-source projects.
-
-If you want, I can also write:
-
-a more marketing-oriented README,
-
-a technical whitepaper-style README,
-
-or a developer onboarding section with architecture diagrams.
-
-Just tell me the style you prefer.
